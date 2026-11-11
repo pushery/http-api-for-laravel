@@ -27,9 +27,14 @@ use Throwable;
  */
 final readonly class ProblemRenderer
 {
+    /**
+     * @param  RecognizesApiRequests|null  $apiRequests  which requests belong to the API; the container hands in the one
+     *                                                   the application binds, and without one the configuration decides
+     */
     public function __construct(
         private Repository $config,
         private Translator $translator,
+        private ?RecognizesApiRequests $apiRequests = null,
     ) {}
 
     /** The answer to a failure, or null where the request is no API request and Laravel answers as it would. */
@@ -45,10 +50,8 @@ final readonly class ProblemRenderer
     /** Whether a failure on this request is answered with a problem document. */
     public function answersWithProblems(Request $request): bool
     {
-        foreach ($this->routePrefixes() as $prefix) {
-            if ($request->is($prefix, $prefix.'/*')) {
-                return true;
-            }
+        if (($this->apiRequests ?? new ConfiguredApiRequests($this->config))->isApiRequest($request)) {
+            return true;
         }
 
         if (str_contains((string) $request->header('Accept'), Problem::MEDIA_TYPE)) {
@@ -113,26 +116,6 @@ final readonly class ProblemRenderer
         $scheme = $this->config->get('http-api.problems.www_authenticate', 'Bearer');
 
         return is_string($scheme) && trim($scheme) !== '' ? ['WWW-Authenticate' => trim($scheme)] : [];
-    }
-
-    /** @return list<string> */
-    private function routePrefixes(): array
-    {
-        $prefixes = $this->config->get('http-api.problems.route_prefixes', ['api']);
-
-        if (! is_array($prefixes)) {
-            return [];
-        }
-
-        $trimmed = [];
-
-        foreach ($prefixes as $prefix) {
-            if (is_string($prefix) && trim($prefix, '/ ') !== '') {
-                $trimmed[] = trim($prefix, '/ ');
-            }
-        }
-
-        return $trimmed;
     }
 
     private function sentence(string $problem): string

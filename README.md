@@ -23,8 +23,7 @@ The IETF HTTP API standards for Laravel: Idempotency-Key replays that compare th
 
 **Full documentation at
 [docs.pushery.com/http-api-for-laravel](https://docs.pushery.com/http-api-for-laravel/).**
-This README is the quick start; the guides and the configuration reference live
-there.
+This README is the quick start; the guides and the configuration reference live there.
 
 ## Requirements
 
@@ -83,7 +82,9 @@ See [Idempotency](https://docs.pushery.com/http-api-for-laravel/idempotency).
 ### Problem documents
 
 Nothing to set up: every failure of a request under `/api`, or one that expects JSON, is answered as
-`application/problem+json` (RFC 9457). An exception of your own implements `ProvidesProblem` to
+`application/problem+json` (RFC 9457). An API on a host of its own, without a prefix, names the host
+in `http-api.problems.hosts`, and an application that knows its API requests another way binds
+`RecognizesApiRequests`. An exception of your own implements `ProvidesProblem` to
 answer with its own type, title and members. See
 [Problem documents](https://docs.pushery.com/http-api-for-laravel/problems/).
 
