@@ -13,7 +13,9 @@ use Illuminate\Support\ServiceProvider;
 use Override;
 use Pushery\HttpApi\Idempotency\AuthenticatedUserScope;
 use Pushery\HttpApi\Idempotency\ResolvesIdempotencyScope;
+use Pushery\HttpApi\Problems\ConfiguredApiRequests;
 use Pushery\HttpApi\Problems\ProblemRenderer;
+use Pushery\HttpApi\Problems\RecognizesApiRequests;
 use Pushery\HttpApi\Support\LanguageFallbackLoader;
 use Throwable;
 
@@ -27,6 +29,10 @@ final class HttpApiServiceProvider extends ServiceProvider
         // Bound only where the application has not bound its own, so a host that knows its callers by an API key or a
         // signed service replaces the default in its own provider, whichever of the two registers first.
         $this->app->bindIf(ResolvesIdempotencyScope::class, AuthenticatedUserScope::class);
+
+        // The same for the requests that belong to the API: the configuration's prefixes and hosts, unless the
+        // application knows its API better and binds its own.
+        $this->app->bindIf(RecognizesApiRequests::class, ConfiguredApiRequests::class);
 
         // A regional locale reads this package's catalog of its language, `pt-BR` from `pt`, in this package's
         // namespace only. Registered here so it wraps the loader before the translator is built from it.

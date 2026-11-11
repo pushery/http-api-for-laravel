@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+use Pushery\HttpApi\Support\EnvSwitch;
+
 return [
 
     /*
@@ -21,34 +23,32 @@ return [
     | document. A switch is read typed, never cast: env() turns only `true`, `false`,
     | `(true)`, `(false)`, `empty` and `null` into values, and a cast to bool makes `no`,
     | `off` and ` false` true. So the spellings that switch it off are named, trimmed and in
-    | any case, and anything else keeps the value shipped here.
+    | any case, and anything else keeps the value shipped here. An empty line, as copying a
+    | template of a .env leaves one, keeps it too, as a missing line does.
     */
-    'enabled' => ! in_array(
-        is_string($enabled = env('HTTP_API_ENABLED')) ? strtolower(trim($enabled)) : $enabled,
-        [false, '', '0', 'false', 'no', 'off'],
-        true,
-    ),
+    'enabled' => EnvSwitch::read(env('HTTP_API_ENABLED'), true),
 
     /*
     |--------------------------------------------------------------------------
     | Problem documents (RFC 9457)
     |--------------------------------------------------------------------------
     | A failure on a request that belongs to the API is answered as
-    | `application/problem+json`: a request under one of the route prefixes, or one that
-    | expects JSON. Every other request is answered as Laravel answers it, so an HTML page
-    | stays an HTML page.
+    | `application/problem+json`: a request under one of the route prefixes or to one of
+    | the hosts, or one that expects JSON. Every other request is answered as Laravel
+    | answers it, so an HTML page stays an HTML page.
     |
     | `type_base` is the URI the package's own problem types start with. RFC 9457 asks for
     | a type a person can look up, and the default is the page that documents each one. A
     | problem without a type of its own is `about:blank`.
     */
     'problems' => [
-        'enabled' => ! in_array(
-            is_string($problems = env('HTTP_API_PROBLEMS')) ? strtolower(trim($problems)) : $problems,
-            [false, '', '0', 'false', 'no', 'off'],
-            true,
-        ),
+        'enabled' => EnvSwitch::read(env('HTTP_API_PROBLEMS'), true),
         'route_prefixes' => ['api'],
+
+        // The hosts whose every request belongs to the API, for an API that answers on a host of its own without a path
+        // prefix, such as `api.example.com`. Matched exactly, in any case. An application that knows its API better binds
+        // its own Pushery\HttpApi\Problems\RecognizesApiRequests, which then decides instead of the prefixes and these.
+        'hosts' => [],
         'when_json_is_expected' => true,
         'type_base' => is_string($typeBase = env('HTTP_API_PROBLEM_TYPE_BASE')) && trim($typeBase) !== ''
             ? trim($typeBase)
