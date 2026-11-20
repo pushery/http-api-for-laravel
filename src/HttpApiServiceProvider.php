@@ -4,10 +4,12 @@ declare(strict_types=1);
 
 namespace Pushery\HttpApi;
 
+use Illuminate\Container\Container;
 use Illuminate\Contracts\Config\Repository;
 use Illuminate\Contracts\Debug\ExceptionHandler;
 use Illuminate\Contracts\Foundation\CachesConfiguration;
 use Illuminate\Contracts\Translation\Loader;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\ServiceProvider;
 use Override;
@@ -21,6 +23,18 @@ use Throwable;
 
 final class HttpApiServiceProvider extends ServiceProvider
 {
+    /**
+     * The sections of the config that are catalogs, as dotted paths from the config key: maps whose
+     * keys the host chooses, one entry per plan, per document or per signing key. A key that a
+     * published catalog leaves out was removed by the host rather than added by a later release, so
+     * the merge takes a published catalog as it stands. A catalog the host never published arrives
+     * whole from the default. A package lists such a section here, for example
+     * 'http-api.plans'.
+     *
+     * @var list<string>
+     */
+    private const array CATALOG_SECTIONS = [];
+
     #[Override]
     public function register(): void
     {
@@ -42,7 +56,6 @@ final class HttpApiServiceProvider extends ServiceProvider
     public function boot(): void
     {
         $this->loadTranslationsFrom(__DIR__.'/../lang', 'http-api');
-        $this->loadRoutesFrom(__DIR__.'/../routes/http-api.php');
         $this->registerProblemRenderer();
 
         if ($this->app->runningInConsole()) {
@@ -54,25 +67,29 @@ final class HttpApiServiceProvider extends ServiceProvider
      * Hand the problem renderer to Laravel's exception handler, which asks it before rendering a failure itself.
      *
      * The switches are read when a failure is rendered, not here, so a test or a host that changes them at runtime gets
-     * what it set. A handler without render callbacks, one an application wrote from scratch against the contract,
-     * gets nothing, and the application renders problems itself through {@see ProblemRenderer::render()}.
+     * what it set. They and the renderer come from the container current at that moment, not from the application this
+     * provider was built with: under a persistent worker such as Laravel Octane, each request runs on a copy of the
+     * application with a configuration of its own, while the handler and this callback, built once, outlive it. A
+     * handler without render callbacks, one an application wrote from scratch against the contract, gets nothing, and
+     * the application renders problems itself through {@see ProblemRenderer::render()}.
      *
      * Registered on whichever handler the application resolves, so one it binds after this provider boots is asked
      * too.
      */
     private function registerProblemRenderer(): void
     {
-        $this->callAfterResolving(ExceptionHandler::class, function (ExceptionHandler $handler): void {
+        $this->callAfterResolving(ExceptionHandler::class, static function (ExceptionHandler $handler): void {
             // A handler of the application's own, without Laravel's render callbacks, calls ProblemRenderer::render() itself.
             if (method_exists($handler, 'renderable')) {
-                $handler->renderable(function (Throwable $failure, Request $request): mixed {
-                    $config = $this->app->make(Repository::class);
+                $handler->renderable(static function (Throwable $failure, Request $request): ?JsonResponse {
+                    $container = Container::getInstance();
+                    $config = $container->make(Repository::class);
 
                     if ($config->get('http-api.enabled') === false || $config->get('http-api.problems.enabled') === false) {
                         return null;
                     }
 
-                    return $this->app->make(ProblemRenderer::class)->render($failure, $request);
+                    return $container->make(ProblemRenderer::class)->render($failure, $request);
                 });
             }
         });
@@ -101,10 +118,14 @@ final class HttpApiServiceProvider extends ServiceProvider
      * `array_is_list([])` is true, which is the behavior wanted here: an empty array is a host
      * saying "none", and descending into it could only re-introduce what it emptied.
      *
-     * A host with a cached config is never merged at all, by the framework's design. For those
-     * installations the published file is the whole truth, so a package that reads a nested key
-     * needs its read-site fallback to agree with the shipped default. The two are halves of one
-     * guarantee.
+     * Recursion stops at a catalog as well, a section named in CATALOG_SECTIONS. Its keys are the
+     * host's, so a key missing from the published catalog is one the host removed, and laying the
+     * default under it would hand that entry back.
+     *
+     * A host with a cached config is not merged at runtime: the cache already holds the merge
+     * `config:cache` did when it ran. A key a later release adds is missing from it until the host
+     * caches again, so a package that reads a nested key needs its read-site fallback to agree with
+     * the shipped default.
      */
     private function mergeConfigRecursivelyFrom(string $path, string $key): void
     {
@@ -124,15 +145,19 @@ final class HttpApiServiceProvider extends ServiceProvider
         $repository->set($key, $this->mergeConfigSections(
             is_array($shipped) ? $shipped : [],
             is_array($existing) ? $existing : [],
+            $key.'.',
+            self::CATALOG_SECTIONS,
         ));
     }
 
     /**
      * @param  array<array-key, mixed>  $shipped
      * @param  array<array-key, mixed>  $published
+     * @param  string  $path  the dotted path of the two maps, so a catalog is recognized at any depth
+     * @param  list<string>  $catalogs  the dotted paths of the catalogs, which the merge takes as published
      * @return array<array-key, mixed>
      */
-    private function mergeConfigSections(array $shipped, array $published): array
+    private function mergeConfigSections(array $shipped, array $published, string $path = '', array $catalogs = []): array
     {
         foreach ($shipped as $key => $value) {
             if (! array_key_exists($key, $published)) {
@@ -141,12 +166,12 @@ final class HttpApiServiceProvider extends ServiceProvider
                 continue;
             }
 
-            // Recurse only where both sides are maps. If either is a list, or the published
-            // value is a scalar or an explicit null, what the host wrote stands. An explicit
-            // null is a value like any other here, which keeps "write => null to switch this
-            // off" working exactly as a shipped config file describes it.
-            if (is_array($value) && is_array($published[$key]) && ! array_is_list($value) && ! array_is_list($published[$key])) {
-                $published[$key] = $this->mergeConfigSections($value, $published[$key]);
+            // Recurse only where both sides are maps and the section is no catalog. If either is a
+            // list, or the published value is a scalar or an explicit null, what the host wrote
+            // stands. An explicit null is a value like any other here, which keeps "write => null
+            // to switch this off" working exactly as a shipped config file describes it.
+            if (is_array($value) && is_array($published[$key]) && ! array_is_list($value) && ! array_is_list($published[$key]) && ! in_array($path.$key, $catalogs, true)) {
+                $published[$key] = $this->mergeConfigSections($value, $published[$key], $path.$key.'.', $catalogs);
             }
         }
 

@@ -24,17 +24,24 @@ use Throwable;
  * response. An exception nobody anticipated answers `500` and says nothing about itself: its
  * message could carry anything, and it still reaches the reporters the way every other one does. With `app.debug` on,
  * such an exception is left to Laravel, whose debug answer is what a developer wants to read.
+ *
+ * The documents it writes itself are titled in the locale of the application, from the package's catalog, and say which
+ * language that is in `Content-Language` ({@see CatalogLanguage}). Nothing here reads `Accept-Language`: an application
+ * that answers each client in its language sets the locale from the request in a middleware of its own.
  */
 final readonly class ProblemRenderer
 {
     /**
      * @param  RecognizesApiRequests|null  $apiRequests  which requests belong to the API; the container hands in the one
      *                                                   the application binds, and without one the configuration decides
+     * @param  NamesProblems|null  $names  the application's names for the documents the package writes itself, where it
+     *                                     binds them
      */
     public function __construct(
         private Repository $config,
         private Translator $translator,
         private ?RecognizesApiRequests $apiRequests = null,
+        private ?NamesProblems $names = null,
     ) {}
 
     /** The answer to a failure, or null where the request is no API request and Laravel answers as it would. */
@@ -61,23 +68,33 @@ final readonly class ProblemRenderer
         return $this->config->get('http-api.problems.when_json_is_expected', true) !== false && $request->expectsJson();
     }
 
-    /** The problem a failure is answered with, or null for one Laravel answers itself. */
+    /**
+     * The problem a failure is answered with, or null for one Laravel answers itself.
+     *
+     * A document the package writes itself goes to the application's {@see NamesProblems} where one is bound. One a
+     * failure provides is the application's already.
+     */
     public function problemFor(Throwable $failure): ?Problem
     {
-        return match (true) {
-            $failure instanceof ProvidesProblem => $failure->toProblem(),
+        if ($failure instanceof ProvidesProblem) {
+            return $failure->toProblem();
+        }
+
+        $problem = match (true) {
             $failure instanceof HttpResponseException,
             $failure instanceof ValidationException && $failure->response !== null => null,
-            $failure instanceof ValidationException => new Problem(
+            $failure instanceof ValidationException => $this->problem(
                 $failure->status >= 400 && $failure->status <= 599 ? $failure->status : 422,
-                detail: $this->sentence('validation'),
-                members: ['errors' => $this->errorsOf($failure)],
+                $this->sentence('validation'),
+                ['errors' => $this->errorsOf($failure)],
             ),
-            $failure instanceof AuthenticationException => new Problem(401, detail: $this->sentence('authentication'), headers: $this->challenge()),
+            $failure instanceof AuthenticationException => $this->problem(401, $this->sentence('authentication'), headers: $this->challenge()),
             $failure instanceof HttpExceptionInterface => $this->httpProblem($failure),
             $this->config->get('app.debug') === true => null,
-            default => new Problem(500, detail: $this->sentence('server')),
+            default => $this->problem(500, $this->sentence('server')),
         };
+
+        return $problem instanceof Problem && $this->names instanceof NamesProblems ? $this->names->name($problem, $failure) : $problem;
     }
 
     /**
@@ -99,10 +116,34 @@ final readonly class ProblemRenderer
         $message = trim($failure->getMessage());
         $previous = $failure->getPrevious();
 
+        return $this->problem(
+            $status,
+            $message !== '' && (! $previous instanceof Throwable || $previous instanceof AuthorizationException) ? $message : null,
+            headers: $this->stringHeaders($failure->getHeaders()),
+        );
+    }
+
+    /**
+     * A document the package writes itself: titled by its status in the locale of the application, and naming that
+     * language.
+     *
+     * The title comes from the package's catalog. A status it does not list keeps the English phrase {@see Problem}
+     * gives a blank problem. A `Content-Language` the failure sets itself wins over the catalog's.
+     *
+     * @param  array<string, mixed>  $members
+     * @param  array<string, string>  $headers
+     */
+    private function problem(int $status, ?string $detail, array $members = [], array $headers = []): Problem
+    {
+        $key = 'http-api::messages.statuses.'.$status;
+        $title = $this->translator->get($key);
+
         return new Problem(
             $status,
-            detail: $message !== '' && (! $previous instanceof Throwable || $previous instanceof AuthorizationException) ? $message : null,
-            headers: $this->stringHeaders($failure->getHeaders()),
+            title: is_string($title) && $title !== $key ? $title : null,
+            detail: $detail,
+            members: $members,
+            headers: ['Content-Language' => CatalogLanguage::of($this->translator), ...$headers],
         );
     }
 

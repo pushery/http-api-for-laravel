@@ -24,21 +24,22 @@ use Throwable;
  *
  * Only an answer below `400` is kept. A refused or failed request frees its key, so the corrected request can be sent
  * under it again. The key is taken for `in_flight_ttl` while its first request runs, so a process that dies midway
- * frees it, and the answer is kept for `ttl`. An answer there is nothing to keep of, a stream or a file, and one the
- * store cannot hold, larger than its item size or lost to a store that failed, still reach the client, and the key
- * stays used for `ttl`: a repeat is told so with `409` instead of acting a second time.
+ * frees it, and the answer is kept for `ttl`. A store that throws while it frees the key is reported, the request keeps
+ * its own answer, and the key stays taken until `in_flight_ttl` runs out. An answer there is nothing to keep of, a
+ * stream or a file, and one the store cannot hold, larger than its item size or lost to a store that failed, still
+ * reach the client, and the key stays used for `ttl`: a repeat is told so with `409` instead of acting a second time.
+ * A store that refuses the write or throws on it is reported. A store that takes no key at all, as a full Redis under
+ * `noeviction` does, is reported too, and the request is answered with `503` without acting.
  *
  * A key belongs to the scope {@see ResolvesIdempotencyScope} names, so two clients with the same key never meet each
  * other's answer. `POST` and `PATCH` need a key; `PUT` and `DELETE` come to the same end however often they are sent
- * and need none, though one they carry is held like any other. `GET`, `HEAD` and `OPTIONS` pass untouched. With the
- * parameter `optional`, `Idempotent::class.':optional'`, no method needs a key.
+ * and need none, though one they carry is held like any other. The methods `Request::isMethodSafe()` names, `GET`,
+ * `HEAD`, `OPTIONS`, `TRACE` and `QUERY`, change nothing a key would protect and pass untouched. With the parameter
+ * `optional`, `Idempotent::class.':optional'`, no method needs a key.
  */
 final readonly class Idempotent
 {
     public const string REPLAYED = 'Idempotent-Replayed';
-
-    /** The methods that change nothing, which a key would not protect. */
-    private const array SAFE = ['GET', 'HEAD', 'OPTIONS', 'TRACE'];
 
     /** The methods that need a key unless the route makes it optional. */
     private const array NEED_A_KEY = ['POST', 'PATCH'];
@@ -57,11 +58,11 @@ final readonly class Idempotent
      */
     public function handle(Request $request, Closure $next, string $mode = 'required'): Response
     {
-        if ($this->config->get('http-api.enabled') === false || in_array($request->method(), self::SAFE, true)) {
+        if ($this->config->get('http-api.enabled') === false || $request->isMethodSafe()) {
             return $next($request);
         }
 
-        $key = $this->unquoted(trim((string) $request->headers->get($this->header(), '')));
+        $key = $this->unquoted(trim((string) $request->headers->get(IdempotencyHeader::name($this->config), '')));
 
         if ($key === '') {
             return $mode !== 'optional' && in_array($request->method(), self::NEED_A_KEY, true)
@@ -69,7 +70,9 @@ final readonly class Idempotent
                 : $next($request);
         }
 
-        if (strlen($key) > $this->longest() || preg_match('/^[\x20-\x7E]+$/', $key) !== 1) {
+        // `\z`, not `$`: the trim above runs before the quotes come off, so a line feed inside them stays in the key,
+        // and `$` also matches before a final line feed.
+        if (strlen($key) > $this->longest() || preg_match('/^[\x20-\x7E]+\z/', $key) !== 1) {
             return IdempotencyRefusal::malformed()->toProblem()->toResponse();
         }
 
@@ -97,7 +100,12 @@ final readonly class Idempotent
             }
         }
 
-        return IdempotencyRefusal::inFlight()->toProblem()->toResponse();
+        // Neither look took the key, and neither found a record under it: the store refuses its writes without
+        // throwing, as a full Redis under `noeviction` does through phpredis. Nothing has acted, so the client is asked
+        // to come back later, and the refusing store is reported.
+        $this->exceptions->report(KeyNotTaken::by($this->storeLabel()));
+
+        return IdempotencyRefusal::notTaken()->toProblem()->toResponse();
     }
 
     /**
@@ -113,7 +121,7 @@ final readonly class Idempotent
         $response = $next($request);
 
         if ($response->getStatusCode() >= 400) {
-            $store->forget($slot);
+            $this->free($store, $slot);
 
             return $response;
         }
@@ -129,9 +137,14 @@ final readonly class Idempotent
             return $response;
         }
 
+        // A body that is no valid UTF-8 is kept as base64: a database store writes the record into a text column, and
+        // PostgreSQL and MySQL refuse such bytes there.
+        $base64 = preg_match('//u', $content) !== 1;
+
         $answer = [
             'status' => $response->getStatusCode(),
-            'content' => $content,
+            'content' => $base64 ? base64_encode($content) : $content,
+            'base64' => $base64,
             'headers' => $this->replayedHeadersOf($response),
         ];
 
@@ -145,22 +158,47 @@ final readonly class Idempotent
     }
 
     /**
-     * Write a key's record, and report a store that throws rather than failing a request that has already acted.
+     * Free the key of a request that did not act, and report a store that throws on it rather than replacing the
+     * request's own answer with a failure. The key then stays taken until `in_flight_ttl` runs out.
+     */
+    private function free(Store $store, string $slot): void
+    {
+        try {
+            $store->forget($slot);
+        } catch (Throwable $failure) {
+            $this->exceptions->report($failure);
+        }
+    }
+
+    /**
+     * Write a key's record, and report a store that refuses it or throws rather than failing a request that has already
+     * acted.
      *
-     * @param  array{fingerprint: string, answer: array{status: int, content: string, headers: array<string, string>}|false}  $record
+     * @param  array{fingerprint: string, answer: array{status: int, content: string, base64: bool, headers: array<string, string>}|false}  $record
      */
     private function keep(Store $store, string $slot, array $record, int $ttl): bool
     {
         try {
-            return $store->put($slot, $record, $ttl);
+            $kept = $store->put($slot, $record, $ttl);
         } catch (Throwable $failure) {
             $this->exceptions->report($failure);
 
             return false;
         }
+
+        // A store can refuse a write without throwing: memcached answers an item above its item size with false.
+        if (! $kept) {
+            $this->exceptions->report(AnswerNotKept::by($this->storeLabel(), is_array($record['answer']) ? strlen($record['answer']['content']) : null));
+        }
+
+        return $kept;
     }
 
-    /** The answer to a key that was used before: the first answer, or why there is none to give. */
+    /**
+     * The answer to a key that was used before: the first answer, or why there is none to give.
+     *
+     * @param  mixed  $held  the record the cache store returned, typed mixed by PSR-16 and checked here field by field
+     */
     private function answerAgain(mixed $held, string $fingerprint): Response
     {
         $held = is_array($held) ? $held : [];
@@ -187,8 +225,10 @@ final readonly class Idempotent
             }
         }
 
+        $content = is_string($answer['content'] ?? null) ? $answer['content'] : '';
+
         return new IlluminateResponse(
-            is_string($answer['content'] ?? null) ? $answer['content'] : '',
+            ($answer['base64'] ?? false) === true ? (string) base64_decode($content, true) : $content,
             is_int($answer['status'] ?? null) ? $answer['status'] : 200,
             [...$headers, self::REPLAYED => 'true'],
         );
@@ -225,18 +265,19 @@ final readonly class Idempotent
         return strlen($key) >= 2 && str_starts_with($key, '"') && str_ends_with($key, '"') ? substr($key, 1, -1) : $key;
     }
 
-    private function header(): string
-    {
-        $header = $this->config->get('http-api.idempotency.header');
-
-        return is_string($header) && $header !== '' ? $header : 'Idempotency-Key';
-    }
-
     private function storeName(): ?string
     {
         $store = $this->config->get('http-api.idempotency.store');
 
         return is_string($store) && $store !== '' ? $store : null;
+    }
+
+    /** The name of the store the keys are kept in, as a report names it: the one configured, or the default store. */
+    private function storeLabel(): string
+    {
+        $default = $this->config->get('cache.default');
+
+        return $this->storeName() ?? (is_string($default) ? $default : 'default');
     }
 
     private function longest(): int
