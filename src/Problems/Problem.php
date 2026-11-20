@@ -60,7 +60,7 @@ final readonly class Problem
 
         $document = array_filter(
             ['type' => $this->type, 'title' => $title, 'status' => $this->status, 'detail' => $this->detail, 'instance' => $this->instance],
-            static fn (mixed $value): bool => $value !== null,
+            static fn (string|int|null $value): bool => $value !== null,
         );
 
         foreach ($this->members as $name => $value) {

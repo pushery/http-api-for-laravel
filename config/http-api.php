@@ -49,6 +49,10 @@ return [
         // prefix, such as `api.example.com`. Matched exactly, in any case. An application that knows its API better binds
         // its own Pushery\HttpApi\Problems\RecognizesApiRequests, which then decides instead of the prefixes and these.
         'hosts' => [],
+
+        // A request that expects JSON gets a problem document on every route, outside the API too, in place of Laravel's
+        // own JSON and its `message`. False keeps Laravel's answer there, and only the prefixes, the hosts and an Accept
+        // header that asks for application/problem+json decide.
         'when_json_is_expected' => true,
         'type_base' => is_string($typeBase = env('HTTP_API_PROBLEM_TYPE_BASE')) && trim($typeBase) !== ''
             ? trim($typeBase)
@@ -64,9 +68,33 @@ return [
     | Idempotency-Key (draft-ietf-httpapi-idempotency-key-header)
     |--------------------------------------------------------------------------
     | A write that carries an `Idempotency-Key` acts once, however often it is sent. The
-    | key and the answer are kept in a cache store that keeps `add()` atomic: redis,
-    | database, memcached, dynamodb or array. The file store does not, and two requests
-    | under one key could then both act. `store` names it, or null for the default store.
+    | key and the answer are kept in a cache store that every process and server of the
+    | API shares and that outlasts the request: redis, database or dynamodb. The file
+    | store qualifies only where a single server answers the API, because each server
+    | keeps its own disk, and the array store forgets its keys with the request, so it
+    | serves tests alone. Name a single store, never one of the `failover` driver: when
+    | one of its stores throws, it takes the keys in the next, which never saw the keys
+    | taken before, so a repeat acts a second time, and once it reaches array in the
+    | chain, every repeat does. `store` names it, or null for the default store.
+    |
+    | The store has to lose nothing before `ttl`, or a retry acts a second time. A key goes
+    | early in three ways. The store evicts it under memory pressure: Redis under every
+    | `maxmemory-policy` but `noeviction`, memcached unless it runs with `-M`. A flush
+    | empties it: `cache:clear` and `optimize:clear` flush the default store, a Redis
+    | store flushes the whole database of its connection and a database store its table.
+    | Or the store restarts without persistence: Redis without `appendonly yes`, memcached
+    | every time. So give the keys a store of their own, a Redis connection and database
+    | no other store uses or a database store with a table of its own, and leave it out
+    | of every `cache:clear` a deploy runs. A database store deletes the row of an
+    | expired key only when the key is read again, and a file store its file, so on
+    | either store schedule the pruning the package ships once a day, in routes/console.php:
+    | Schedule::call(\Pushery\HttpApi\Idempotency\PruneExpiredIdempotencyKeys::class)->daily().
+    |
+    | `header` is the name of the header a client sends its key in, `Idempotency-Key` as
+    | the draft names it. An API that calls it something else names it here, and every
+    | problem the middleware answers with names this header too. `max_key_length` is the
+    | longest key it takes, in characters; a longer one is refused with `400`, and so is
+    | one with a character outside printable ASCII.
     |
     | `ttl` is how long an answer is kept, in seconds, and outlasts every retry a client
     | makes. `in_flight_ttl` is how long a key stays taken while its first request runs,

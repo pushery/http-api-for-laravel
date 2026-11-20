@@ -8,6 +8,7 @@ use Illuminate\Container\Container;
 use Illuminate\Contracts\Config\Repository;
 use Illuminate\Contracts\Translation\Translator;
 use LogicException;
+use Pushery\HttpApi\Problems\CatalogLanguage;
 use Pushery\HttpApi\Problems\Problem;
 use Pushery\HttpApi\Problems\ProvidesProblem;
 
@@ -29,19 +30,23 @@ final class IdempotencyScopeMissing extends LogicException implements ProvidesPr
         ));
     }
 
+    /** The problem, its texts naming the header the middleware reads the key from. */
     public function toProblem(): Problem
     {
         $container = Container::getInstance();
-        $base = $container->make(Repository::class)->get('http-api.problems.type_base');
+        $config = $container->make(Repository::class);
+        $base = $config->get('http-api.problems.type_base');
         $translator = $container->make(Translator::class);
-        $title = $translator->get('http-api::messages.idempotency-scope-missing.title');
-        $detail = $translator->get('http-api::messages.idempotency-scope-missing.detail');
+        $header = ['header' => IdempotencyHeader::name($config)];
+        $title = $translator->get('http-api::messages.idempotency-scope-missing.title', $header);
+        $detail = $translator->get('http-api::messages.idempotency-scope-missing.detail', $header);
 
         return new Problem(
             500,
             type: (is_string($base) ? $base : '').'idempotency-scope-missing',
             title: is_string($title) ? $title : null,
             detail: is_string($detail) ? $detail : null,
+            headers: ['Content-Language' => CatalogLanguage::of($translator)],
         );
     }
 }
