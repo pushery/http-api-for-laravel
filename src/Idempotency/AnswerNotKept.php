@@ -22,7 +22,7 @@ final class AnswerNotKept extends RuntimeException
     public static function by(string $store, ?int $bytes): self
     {
         if ($bytes === null) {
-            return new self("The cache store [{$store}] refused to keep the record of an idempotency key. The key is held only until its in_flight_ttl ends, and a repeat after that acts a second time.");
+            return new self("The cache store [{$store}] refused to keep the record of an idempotency key. The key stays held by the record of its running request, and a repeat of the request takes it over once in_flight_ttl has passed and acts a second time.");
         }
 
         return new self("The cache store [{$store}] refused to keep an answer of {$bytes} bytes under an idempotency key. A repeat of the request is answered with 409 instead of the answer.");

@@ -8,17 +8,15 @@ use Illuminate\Container\Container;
 use Illuminate\Contracts\Config\Repository;
 use Illuminate\Contracts\Debug\ExceptionHandler;
 use Illuminate\Contracts\Foundation\CachesConfiguration;
-use Illuminate\Contracts\Translation\Loader;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\ServiceProvider;
 use Override;
+use Pushery\HttpApi\Errors\ConfiguredApiRequests;
+use Pushery\HttpApi\Errors\ErrorRenderer;
+use Pushery\HttpApi\Errors\RecognizesApiRequests;
 use Pushery\HttpApi\Idempotency\AuthenticatedUserScope;
 use Pushery\HttpApi\Idempotency\ResolvesIdempotencyScope;
-use Pushery\HttpApi\Problems\ConfiguredApiRequests;
-use Pushery\HttpApi\Problems\ProblemRenderer;
-use Pushery\HttpApi\Problems\RecognizesApiRequests;
-use Pushery\HttpApi\Support\LanguageFallbackLoader;
 use Throwable;
 
 final class HttpApiServiceProvider extends ServiceProvider
@@ -44,19 +42,14 @@ final class HttpApiServiceProvider extends ServiceProvider
         // signed service replaces the default in its own provider, whichever of the two registers first.
         $this->app->bindIf(ResolvesIdempotencyScope::class, AuthenticatedUserScope::class);
 
-        // The same for the requests that belong to the API: the configuration's prefixes and hosts, unless the
-        // application knows its API better and binds its own.
+        // The same for the requests that belong to the API: the configuration's API host, hosts and prefixes, unless
+        // the application knows its API better and binds its own.
         $this->app->bindIf(RecognizesApiRequests::class, ConfiguredApiRequests::class);
-
-        // A regional locale reads this package's catalog of its language, `pt-BR` from `pt`, in this package's
-        // namespace only. Registered here so it wraps the loader before the translator is built from it.
-        $this->app->extend('translation.loader', static fn (Loader $loader): Loader => new LanguageFallbackLoader($loader, 'http-api'));
     }
 
     public function boot(): void
     {
-        $this->loadTranslationsFrom(__DIR__.'/../lang', 'http-api');
-        $this->registerProblemRenderer();
+        $this->registerErrorRenderer();
 
         if ($this->app->runningInConsole()) {
             $this->registerPublishing();
@@ -64,32 +57,32 @@ final class HttpApiServiceProvider extends ServiceProvider
     }
 
     /**
-     * Hand the problem renderer to Laravel's exception handler, which asks it before rendering a failure itself.
+     * Hand the error renderer to Laravel's exception handler, which asks it before rendering a failure itself.
      *
      * The switches are read when a failure is rendered, not here, so a test or a host that changes them at runtime gets
      * what it set. They and the renderer come from the container current at that moment, not from the application this
      * provider was built with: under a persistent worker such as Laravel Octane, each request runs on a copy of the
      * application with a configuration of its own, while the handler and this callback, built once, outlive it. A
      * handler without render callbacks, one an application wrote from scratch against the contract, gets nothing, and
-     * the application renders problems itself through {@see ProblemRenderer::render()}.
+     * the application renders the errors itself through {@see ErrorRenderer::render()}.
      *
      * Registered on whichever handler the application resolves, so one it binds after this provider boots is asked
      * too.
      */
-    private function registerProblemRenderer(): void
+    private function registerErrorRenderer(): void
     {
         $this->callAfterResolving(ExceptionHandler::class, static function (ExceptionHandler $handler): void {
-            // A handler of the application's own, without Laravel's render callbacks, calls ProblemRenderer::render() itself.
+            // A handler of the application's own, without Laravel's render callbacks, calls ErrorRenderer::render() itself.
             if (method_exists($handler, 'renderable')) {
                 $handler->renderable(static function (Throwable $failure, Request $request): ?JsonResponse {
                     $container = Container::getInstance();
                     $config = $container->make(Repository::class);
 
-                    if ($config->get('http-api.enabled') === false || $config->get('http-api.problems.enabled') === false) {
+                    if ($config->get('http-api.enabled') === false || $config->get('http-api.errors.enabled') === false) {
                         return null;
                     }
 
-                    return $container->make(ProblemRenderer::class)->render($failure, $request);
+                    return $container->make(ErrorRenderer::class)->render($failure, $request);
                 });
             }
         });
@@ -181,21 +174,16 @@ final class HttpApiServiceProvider extends ServiceProvider
     private function registerPublishing(): void
     {
         // Resolve publish targets through the Application contract's path methods
-        // (available via illuminate/contracts), not the config_path()/lang_path() global
-        // helpers. Those are Foundation helpers,
+        // (available via illuminate/contracts), not the config_path() global helper.
+        // It is a Foundation helper,
         // shipped only with laravel/framework — which this lean package does not
         // require — so the helper form would freeze a wrong dependency contract and
         // fatal in a non-Foundation host. The method form is behavior-identical.
         //
-        // Each group carries the bare 'http-api' umbrella tag on top of its specific one, so
-        // `vendor:publish --tag="http-api"` publishes the configuration and the translations at
-        // once, the tag convention Laravel's official package skeleton establishes.
+        // The group carries the bare 'http-api' umbrella tag on top of its specific one, the tag
+        // convention Laravel's official package skeleton establishes.
         $this->publishes([
             __DIR__.'/../config/http-api.php' => $this->app->configPath('http-api.php'),
         ], ['http-api', 'http-api-config']);
-
-        $this->publishes([
-            __DIR__.'/../lang' => $this->app->langPath('vendor/http-api'),
-        ], ['http-api', 'http-api-lang']);
     }
 }

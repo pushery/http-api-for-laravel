@@ -2,14 +2,14 @@
 
 declare(strict_types=1);
 
-namespace Pushery\HttpApi\Problems;
+namespace Pushery\HttpApi\Errors;
 
 use Illuminate\Contracts\Config\Repository;
 use Illuminate\Http\Request;
 
 /**
- * The requests the configuration names as the API's: those under one of `problems.route_prefixes`, and every request to
- * one of `problems.hosts`, for an API that answers on a host of its own without a path prefix.
+ * The requests the configuration names as the API's: every request to the API host, `errors.api_host` or `api.` before
+ * the host of `app.url`, every request to one of `errors.hosts`, and those under one of `errors.route_prefixes`.
  *
  * Both are read when a request is asked about, so a test or a host that changes them at runtime gets what it set.
  */
@@ -19,11 +19,37 @@ final readonly class ConfiguredApiRequests implements RecognizesApiRequests
 
     public function isApiRequest(Request $request): bool
     {
-        if (in_array(strtolower($request->getHost()), $this->hosts(), true)) {
+        $host = strtolower($request->getHost());
+
+        if ($host === $this->apiHost() || in_array($host, $this->hosts(), true)) {
             return true;
         }
 
         return array_any($this->routePrefixes(), fn (string $prefix): bool => $request->is($prefix, $prefix.'/*'));
+    }
+
+    /**
+     * The host of the API in lower case: `errors.api_host`, or where that is unset `api.` before the host of `app.url`
+     * without a leading `www.`, and that host itself where it starts with `api.`. Null where neither names a host.
+     */
+    private function apiHost(): ?string
+    {
+        $configured = $this->config->get('http-api.errors.api_host');
+
+        if (is_string($configured) && trim($configured) !== '') {
+            return strtolower(trim($configured));
+        }
+
+        $url = $this->config->get('app.url');
+        $host = is_string($url) ? parse_url($url, PHP_URL_HOST) : null;
+
+        if (! is_string($host) || $host === '') {
+            return null;
+        }
+
+        $host = strtolower($host);
+
+        return str_starts_with($host, 'api.') ? $host : 'api.'.(str_starts_with($host, 'www.') ? substr($host, 4) : $host);
     }
 
     /**
@@ -33,7 +59,7 @@ final readonly class ConfiguredApiRequests implements RecognizesApiRequests
      */
     private function hosts(): array
     {
-        $hosts = $this->config->get('http-api.problems.hosts', []);
+        $hosts = $this->config->get('http-api.errors.hosts', []);
 
         if (! is_array($hosts)) {
             return [];
@@ -57,7 +83,7 @@ final readonly class ConfiguredApiRequests implements RecognizesApiRequests
      */
     private function routePrefixes(): array
     {
-        $prefixes = $this->config->get('http-api.problems.route_prefixes', ['api']);
+        $prefixes = $this->config->get('http-api.errors.route_prefixes', []);
 
         if (! is_array($prefixes)) {
             return [];
