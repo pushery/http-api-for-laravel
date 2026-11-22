@@ -1,15 +1,15 @@
 {
   "$schema": "https://getcomposer.org/schema.json",
   "name": "pushery/http-api-for-laravel",
-  "description": "The IETF HTTP API standards for Laravel: Idempotency-Key replays that compare the request body, and RFC 9457 problem details for every API error.",
+  "description": "Idempotency-Key replays that compare the request body, and JSON:API errors from a catalog shared with the gateway, for every error of a Laravel API.",
   "keywords": [
     "laravel",
     "http",
     "api",
     "idempotency",
     "idempotency-key",
-    "rfc9457",
-    "problem-details"
+    "json-api",
+    "errors"
   ],
   "license": "MIT",
   "authors": [
@@ -57,10 +57,15 @@
     "pestphp/pest-plugin-type-coverage": "^5.0",
     "phpstan/phpstan": "2.3.5",
     "phpstan/phpstan-deprecation-rules": "^2.0.5",
-    "pushery/sqlens-for-laravel": "^0.34.0",
+    "pushery/sqlens-for-laravel": "^0.35.0",
     "rector/rector": "^2.7.0",
+    "spatie/laravel-query-builder": "^7.3",
     "spaze/phpstan-disallowed-calls": "^4.12",
     "symfony/yaml": "^7.4.17 || ^8.1.5"
+  },
+  "suggest": {
+    "illuminate/pagination": "CursorPages pages a list through Laravel's cursor paginator, which every Laravel application has.",
+    "spatie/laravel-query-builder": "Its refusals of a filter, a sort, an include, a field or an append the route does not allow are answered as JSON:API errors that name the parameter."
   },
   "autoload": {
     "psr-4": {

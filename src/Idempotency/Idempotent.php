@@ -6,11 +6,15 @@ namespace Pushery\HttpApi\Idempotency;
 
 use Closure;
 use Illuminate\Contracts\Cache\Factory;
+use Illuminate\Contracts\Cache\LockProvider;
 use Illuminate\Contracts\Cache\Repository as Store;
 use Illuminate\Contracts\Config\Repository;
 use Illuminate\Contracts\Debug\ExceptionHandler;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response as IlluminateResponse;
+use Illuminate\Support\Carbon;
+use Pushery\HttpApi\Errors\RequestId;
 use Symfony\Component\HttpFoundation\Response;
 use Throwable;
 
@@ -23,13 +27,14 @@ use Throwable;
  * would report an action that was never asked for. While the first request runs, a second one is told so with `409`.
  *
  * Only an answer below `400` is kept. A refused or failed request frees its key, so the corrected request can be sent
- * under it again. The key is taken for `in_flight_ttl` while its first request runs, so a process that dies midway
- * frees it, and the answer is kept for `ttl`. A store that throws while it frees the key is reported, the request keeps
- * its own answer, and the key stays taken until `in_flight_ttl` runs out. An answer there is nothing to keep of, a
+ * under it again. The answer is kept for `ttl`, and so is the record of a first request that never answers, its process
+ * having died midway: the same request takes the key over once `in_flight_ttl` has passed, and another one is still
+ * refused with `422`. A store that throws while it frees the key is reported, the request keeps its own answer, and the
+ * key stays taken in the same way. An answer there is nothing to keep of, a
  * stream or a file, and one the store cannot hold, larger than its item size or lost to a store that failed, still
  * reach the client, and the key stays used for `ttl`: a repeat is told so with `409` instead of acting a second time.
  * A store that refuses the write or throws on it is reported. A store that takes no key at all, as a full Redis under
- * `noeviction` does, is reported too, and the request is answered with `503` without acting.
+ * `noeviction` does, is reported too, and the request is answered with `500` `internal_error` without acting.
  *
  * A key belongs to the scope {@see ResolvesIdempotencyScope} names, so two clients with the same key never meet each
  * other's answer. `POST` and `PATCH` need a key; `PUT` and `DELETE` come to the same end however often they are sent
@@ -66,14 +71,14 @@ final readonly class Idempotent
 
         if ($key === '') {
             return $mode !== 'optional' && in_array($request->method(), self::NEED_A_KEY, true)
-                ? IdempotencyRefusal::missing()->toProblem()->toResponse()
+                ? $this->refuse(IdempotencyRefusal::missing(), $request)
                 : $next($request);
         }
 
         // `\z`, not `$`: the trim above runs before the quotes come off, so a line feed inside them stays in the key,
         // and `$` also matches before a final line feed.
         if (strlen($key) > $this->longest() || preg_match('/^[\x20-\x7E]+\z/', $key) !== 1) {
-            return IdempotencyRefusal::malformed()->toProblem()->toResponse();
+            return $this->refuse(IdempotencyRefusal::malformed(), $request);
         }
 
         $scope = $this->scopes->scopeOf($request);
@@ -89,14 +94,16 @@ final readonly class Idempotent
         // Twice at most: a key the first look finds taken can be freed before it is read, when the request that held
         // it failed in between. The second look then takes it like a first request.
         for ($look = 0; $look < 2; $look++) {
-            if ($store->add($slot, ['fingerprint' => $fingerprint, 'answer' => null], $this->positive('in_flight_ttl', 600))) {
+            if ($store->add($slot, $this->running($fingerprint), $this->kept())) {
                 return $this->act($request, $next, $store, $slot, $fingerprint);
             }
 
             $held = $store->get($slot);
 
             if ($held !== null) {
-                return $this->answerAgain($held, $fingerprint);
+                return $this->abandonedBy($held, $fingerprint) && $this->takeOver($store, $slot, $fingerprint)
+                    ? $this->act($request, $next, $store, $slot, $fingerprint)
+                    : $this->answerAgain($held, $fingerprint, $request);
             }
         }
 
@@ -105,7 +112,83 @@ final readonly class Idempotent
         // to come back later, and the refusing store is reported.
         $this->exceptions->report(KeyNotTaken::by($this->storeLabel()));
 
-        return IdempotencyRefusal::notTaken()->toProblem()->toResponse();
+        return $this->refuse(IdempotencyRefusal::notTaken(), $request);
+    }
+
+    /**
+     * The answer to a refused request: the refusal's JSON:API error, naming the request's id like every error response.
+     */
+    private function refuse(IdempotencyRefusal $refusal, Request $request): JsonResponse
+    {
+        return $refusal->toErrorDocument()->toResponse(RequestId::of($request));
+    }
+
+    /**
+     * The record of a key whose first request runs: its fingerprint and the moment it took the key.
+     *
+     * @return array{fingerprint: string, answer: null, taken_at: int}
+     */
+    private function running(string $fingerprint): array
+    {
+        return ['fingerprint' => $fingerprint, 'answer' => null, 'taken_at' => Carbon::now()->getTimestamp()];
+    }
+
+    /**
+     * How long the record of a running request is kept: as long as an answer, so the key of a request that never
+     * answers stays refused to another request, and never shorter than `in_flight_ttl`.
+     */
+    private function kept(): int
+    {
+        return max($this->positive('ttl', 86_400), $this->positive('in_flight_ttl', 600));
+    }
+
+    /**
+     * Whether the record is a first try of this same request that never answered: the same fingerprint, no answer, and
+     * taken longer ago than `in_flight_ttl`. A record that names no moment, as an earlier version wrote it, is running.
+     *
+     * @param  mixed  $held  the record the store holds under the key, as the store returns it: an array this version or an
+     *                       earlier one wrote, or whatever else a store returns for a key it holds
+     */
+    private function abandonedBy(mixed $held, string $fingerprint): bool
+    {
+        if (! is_array($held) || ($held['fingerprint'] ?? null) !== $fingerprint || ! array_key_exists('answer', $held) || $held['answer'] !== null) {
+            return false;
+        }
+
+        $takenAt = $held['taken_at'] ?? null;
+
+        return is_int($takenAt) && $takenAt + $this->positive('in_flight_ttl', 600) <= Carbon::now()->getTimestamp();
+    }
+
+    /**
+     * Take an abandoned key over for the request that took it first. Under a lock, so two retries of it never both act;
+     * a store without locks, or one that fails, takes nothing over, and the retry is told the key is in flight.
+     */
+    private function takeOver(Store $store, string $slot, string $fingerprint): bool
+    {
+        $locks = $store->getStore();
+
+        if (! $locks instanceof LockProvider) {
+            return false;
+        }
+
+        try {
+            $lock = $locks->lock($slot.':take-over', 10);
+
+            if (! $lock->get()) {
+                return false;
+            }
+
+            try {
+                return $this->abandonedBy($store->get($slot), $fingerprint) && $store->put($slot, $this->running($fingerprint), $this->kept());
+            } finally {
+                $lock->release();
+            }
+        } catch (Throwable $failure) {
+            $this->exceptions->report($failure);
+
+            return false;
+        }
     }
 
     /**
@@ -159,7 +242,8 @@ final readonly class Idempotent
 
     /**
      * Free the key of a request that did not act, and report a store that throws on it rather than replacing the
-     * request's own answer with a failure. The key then stays taken until `in_flight_ttl` runs out.
+     * request's own answer with a failure. The key then stays taken, and the same request takes it over once
+     * `in_flight_ttl` has passed.
      */
     private function free(Store $store, string $slot): void
     {
@@ -195,26 +279,41 @@ final readonly class Idempotent
     }
 
     /**
+     * The seconds until a running first request's hold on its key runs out, as `in_flight_ttl` counts it from the moment
+     * the request took the key. A record that names no moment, as an earlier version wrote it, holds for the whole
+     * `in_flight_ttl`.
+     *
+     * @param  array<array-key, mixed>  $held
+     */
+    private function secondsLeftOf(array $held): int
+    {
+        $takenAt = $held['taken_at'] ?? null;
+        $hold = $this->positive('in_flight_ttl', 600);
+
+        return is_int($takenAt) ? $takenAt + $hold - Carbon::now()->getTimestamp() : $hold;
+    }
+
+    /**
      * The answer to a key that was used before: the first answer, or why there is none to give.
      *
      * @param  mixed  $held  the record the cache store returned, typed mixed by PSR-16 and checked here field by field
      */
-    private function answerAgain(mixed $held, string $fingerprint): Response
+    private function answerAgain(mixed $held, string $fingerprint, Request $request): Response
     {
         $held = is_array($held) ? $held : [];
 
         if (($held['fingerprint'] ?? null) !== $fingerprint) {
-            return IdempotencyRefusal::reused()->toProblem()->toResponse();
+            return $this->refuse(IdempotencyRefusal::reused(), $request);
         }
 
         $answer = $held['answer'] ?? null;
 
         if ($answer === false) {
-            return IdempotencyRefusal::notKept()->toProblem()->toResponse();
+            return $this->refuse(IdempotencyRefusal::notKept(), $request);
         }
 
         if (! is_array($answer)) {
-            return IdempotencyRefusal::inFlight()->toProblem()->toResponse();
+            return $this->refuse(IdempotencyRefusal::inFlight($this->secondsLeftOf($held)), $request);
         }
 
         $headers = [];

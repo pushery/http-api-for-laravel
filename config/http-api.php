@@ -19,8 +19,8 @@ return [
 
     /*
     | Whether the package acts at all. Switched off, the idempotency middleware lets every
-    | request through as if it were not there, and no failure is answered with a problem
-    | document. A switch is read typed, never cast: env() turns only `true`, `false`,
+    | request through as if it were not there, and no failure is answered with JSON:API
+    | errors. A switch is read typed, never cast: env() turns only `true`, `false`,
     | `(true)`, `(false)`, `empty` and `null` into values, and a cast to bool makes `no`,
     | `off` and ` false` true. So the spellings that switch it off are named, trimmed and in
     | any case, and anything else keeps the value shipped here. An empty line, as copying a
@@ -30,37 +30,34 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Problem documents (RFC 9457)
+    | Errors (JSON:API 1.1)
     |--------------------------------------------------------------------------
-    | A failure on a request that belongs to the API is answered as
-    | `application/problem+json`: a request under one of the route prefixes or to one of
-    | the hosts, or one that expects JSON. Every other request is answered as Laravel
-    | answers it, so an HTML page stays an HTML page.
-    |
-    | `type_base` is the URI the package's own problem types start with. RFC 9457 asks for
-    | a type a person can look up, and the default is the page that documents each one. A
-    | problem without a type of its own is `about:blank`.
+    | A failure on a request that belongs to the API is answered as JSON:API errors,
+    | `application/vnd.api+json`, from the error catalog the package ships: the same codes,
+    | titles, details and headers the gateway in front of the application answers with. A
+    | request belongs to the API when it goes to the API host, to one of the hosts or under
+    | one of the route prefixes, or when it asks for `application/vnd.api+json`. The API
+    | host is `api.` before the host of `app.url`, so an application at `example.com` has
+    | its API at `api.example.com`, and no path prefix is shipped. Every other request is
+    | answered as Laravel answers it, so an HTML page stays an HTML page.
     */
-    'problems' => [
-        'enabled' => EnvSwitch::read(env('HTTP_API_PROBLEMS'), true),
-        'route_prefixes' => ['api'],
+    'errors' => [
+        'enabled' => EnvSwitch::read(env('HTTP_API_ERRORS'), true),
+        'route_prefixes' => [],
 
-        // The hosts whose every request belongs to the API, for an API that answers on a host of its own without a path
-        // prefix, such as `api.example.com`. Matched exactly, in any case. An application that knows its API better binds
-        // its own Pushery\HttpApi\Problems\RecognizesApiRequests, which then decides instead of the prefixes and these.
+        // The host the API answers on. Unset, it is `api.` before the host of `app.url`, without a leading `www.`, and the
+        // host of `app.url` itself where that starts with `api.`. HTTP_API_HOST names another, `developers.example.com`
+        // for instance. Matched exactly, in any case.
+        'api_host' => is_string($apiHost = env('HTTP_API_HOST')) && trim($apiHost) !== '' ? trim($apiHost) : null,
+
+        // The hosts whose every request belongs to the API, for an API that answers on more hosts than one. Matched
+        // exactly, in any case. An application that knows its API better binds its own
+        // Pushery\HttpApi\Errors\RecognizesApiRequests, which then decides instead of the API host, these and the prefixes.
         'hosts' => [],
 
-        // A request that expects JSON gets a problem document on every route, outside the API too, in place of Laravel's
-        // own JSON and its `message`. False keeps Laravel's answer there, and only the prefixes, the hosts and an Accept
-        // header that asks for application/problem+json decide.
-        'when_json_is_expected' => true,
-        'type_base' => is_string($typeBase = env('HTTP_API_PROBLEM_TYPE_BASE')) && trim($typeBase) !== ''
-            ? trim($typeBase)
-            : 'https://docs.pushery.com/http-api-for-laravel/problems/',
-
-        // The scheme a 401 names in its WWW-Authenticate header, which RFC 9110 requires of every 401. Bearer is
-        // Sanctum's and most APIs'; null leaves the header to the application.
-        'www_authenticate' => 'Bearer',
+        // True answers a request that expects JSON with JSON:API errors on every route, outside the API too, in place of
+        // Laravel's own JSON and its `message`. False keeps Laravel's answer there.
+        'when_json_is_expected' => false,
     ],
 
     /*
@@ -92,15 +89,16 @@ return [
     |
     | `header` is the name of the header a client sends its key in, `Idempotency-Key` as
     | the draft names it. An API that calls it something else names it here, and every
-    | problem the middleware answers with names this header too. `max_key_length` is the
+    | error the middleware answers with names this header in `source.header`. `max_key_length` is the
     | longest key it takes, in characters; a longer one is refused with `400`, and so is
     | one with a character outside printable ASCII.
     |
     | `ttl` is how long an answer is kept, in seconds, and outlasts every retry a client
-    | makes. `in_flight_ttl` is how long a key stays taken while its first request runs,
-    | so a process that dies mid-request frees it again rather than holding it for the
-    | whole `ttl`. Both are read typed and held to a floor of one second, because a value
-    | that is no number would otherwise end up as zero, which keeps nothing at all.
+    | makes; the record of a first request that never answers is kept as long, so another
+    | request under its key stays refused. `in_flight_ttl` is how long that first request
+    | may run before a retry of the same request takes its key over. Both are read typed
+    | and held to a floor of one second, because a value that is no number would
+    | otherwise end up as zero, which keeps nothing at all.
     |
     | `replayed_headers` are the headers a repeated request gets back beside the status
     | and the body. `Set-Cookie` is never one of them, whatever this list says.
@@ -118,6 +116,24 @@ return [
             ? (int) $longest
             : 255,
         'replayed_headers' => ['Content-Type', 'Location', 'Content-Location', 'ETag', 'Last-Modified'],
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Pagination
+    |--------------------------------------------------------------------------
+    | A list that pages with CursorPages gives `size` items a page where the request names
+    | no `page[size]`, and refuses a `page[size]` above `max_size` with `400`, so no single
+    | request reads a page without a bound. Both are read typed and held to a floor of one,
+    | as the numbers of the idempotency settings are.
+    */
+    'pagination' => [
+        'size' => is_numeric($size = env('HTTP_API_PAGE_SIZE')) && (int) $size >= 1
+            ? (int) $size
+            : 20,
+        'max_size' => is_numeric($largest = env('HTTP_API_MAX_PAGE_SIZE')) && (int) $largest >= 1
+            ? (int) $largest
+            : 100,
     ],
 
 ];

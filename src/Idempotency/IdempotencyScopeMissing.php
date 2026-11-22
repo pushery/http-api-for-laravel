@@ -4,22 +4,20 @@ declare(strict_types=1);
 
 namespace Pushery\HttpApi\Idempotency;
 
-use Illuminate\Container\Container;
-use Illuminate\Contracts\Config\Repository;
-use Illuminate\Contracts\Translation\Translator;
 use LogicException;
-use Pushery\HttpApi\Problems\CatalogLanguage;
-use Pushery\HttpApi\Problems\Problem;
-use Pushery\HttpApi\Problems\ProvidesProblem;
+use Pushery\HttpApi\Errors\ErrorDocument;
+use Pushery\HttpApi\Errors\JsonApiError;
+use Pushery\HttpApi\Errors\ProvidesErrorDocument;
 
 /**
  * A request carries an `Idempotency-Key`, and nothing says who sent it.
  *
  * That is a setting of the application, not a mistake of the client: the route lets an unauthenticated caller write,
  * and no scope resolver was bound that knows that caller. It is thrown rather than answered quietly, so it reaches the
- * reporters, and a client reads a `500` that says the key could not be held.
+ * reporters, and a client reads a `500` `internal_error`. Its message, which names the resolver to bind, stays in the
+ * report.
  */
-final class IdempotencyScopeMissing extends LogicException implements ProvidesProblem
+final class IdempotencyScopeMissing extends LogicException implements ProvidesErrorDocument
 {
     public static function on(string $path): self
     {
@@ -30,23 +28,8 @@ final class IdempotencyScopeMissing extends LogicException implements ProvidesPr
         ));
     }
 
-    /** The problem, its texts naming the header the middleware reads the key from. */
-    public function toProblem(): Problem
+    public function toErrorDocument(): ErrorDocument
     {
-        $container = Container::getInstance();
-        $config = $container->make(Repository::class);
-        $base = $config->get('http-api.problems.type_base');
-        $translator = $container->make(Translator::class);
-        $header = ['header' => IdempotencyHeader::name($config)];
-        $title = $translator->get('http-api::messages.idempotency-scope-missing.title', $header);
-        $detail = $translator->get('http-api::messages.idempotency-scope-missing.detail', $header);
-
-        return new Problem(
-            500,
-            type: (is_string($base) ? $base : '').'idempotency-scope-missing',
-            title: is_string($title) ? $title : null,
-            detail: is_string($detail) ? $detail : null,
-            headers: ['Content-Language' => CatalogLanguage::of($translator)],
-        );
+        return ErrorDocument::of(JsonApiError::of('internal_error'));
     }
 }
