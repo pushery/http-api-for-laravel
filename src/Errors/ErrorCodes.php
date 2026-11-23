@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Pushery\HttpApi\Errors;
 
+use Illuminate\Container\Container;
+use Illuminate\Contracts\Config\Repository;
 use InvalidArgumentException;
 use JsonException;
 use UnexpectedValueException;
@@ -40,6 +42,65 @@ final readonly class ErrorCodes
         }
 
         return $catalog;
+    }
+
+    /**
+     * The catalog the errors of the application are made from: the shipped one, with the details the application
+     * declares under its codes in `http-api.errors.details`, read again whenever that setting changes.
+     *
+     * @throws InvalidArgumentException for a declaration the catalog refuses, see {@see self::withDetails()}
+     */
+    public static function current(): self
+    {
+        static $catalog = null;
+        static $from = null;
+
+        $declared = self::declaredByTheApplication();
+
+        if ($declared === []) {
+            return self::shipped();
+        }
+
+        if (! $catalog instanceof self || $from !== $declared) {
+            $catalog = self::shipped()->withDetails($declared);
+            $from = $declared;
+        }
+
+        return $catalog;
+    }
+
+    /**
+     * The catalog with details an application declares under its codes, by code and then by name, for the causes that
+     * belong to its product. The codes stay the catalog's: a client acts on a code, and a person reads the detail.
+     *
+     * @param  array<mixed>  $declared  by code, then by name, as `http-api.errors.details` holds them
+     *
+     * @throws InvalidArgumentException for a code the catalog does not have, a name the code has already, and a name
+     *                                  or a text that breaks the rules of {@see ErrorCode::declaring()}
+     */
+    public function withDetails(array $declared): self
+    {
+        $codes = $this->codes;
+
+        foreach ($declared as $code => $details) {
+            if (! is_string($code) || ! is_array($details)) {
+                throw new InvalidArgumentException('http-api.errors.details holds the details of the application by the code of the catalog, then by name.');
+            }
+
+            $named = [];
+
+            foreach ($details as $name => $text) {
+                if (! is_string($name) || ! is_string($text)) {
+                    throw new InvalidArgumentException(sprintf('http-api.errors.details holds the details under [%s] by name, each a text.', $code));
+                }
+
+                $named[$name] = $text;
+            }
+
+            $codes[$code] = $this->code($code)->declaring($named);
+        }
+
+        return new self($this->responseHeaders, $this->memberOrder, $codes);
     }
 
     /**
@@ -100,8 +161,11 @@ final readonly class ErrorCodes
     /**
      * The code Laravel answers a status with: the first in the catalog's order that Laravel answers. `409` has two,
      * `conflict` and `request_in_flight`, the refusal of a running request under an idempotency key, and `conflict`
-     * comes first. A status the catalog has none for is answered as `internal_error`, as every failure is that no code
-     * describes.
+     * comes first.
+     *
+     * A client error the catalog has no code of Laravel's for is answered as `malformed_request`, a `400`, so it stays
+     * a refusal a client does not send again unchanged, where a `5xx` would have it retried. Any other status the
+     * catalog has none for is answered as `internal_error`, as every failure is that no code describes.
      */
     public function forStatus(int $status): ErrorCode
     {
@@ -111,7 +175,7 @@ final readonly class ErrorCodes
             }
         }
 
-        return $this->code('internal_error');
+        return $this->code($status >= 400 && $status < 500 ? 'malformed_request' : 'internal_error');
     }
 
     /**
@@ -167,5 +231,23 @@ final readonly class ErrorCodes
         }
 
         return $strings;
+    }
+
+    /**
+     * The details the application declares in `http-api.errors.details`, none outside an application.
+     *
+     * @return array<mixed>
+     *
+     * @throws InvalidArgumentException for a setting that is no map
+     */
+    private static function declaredByTheApplication(): array
+    {
+        $container = Container::getInstance();
+        $config = $container->bound('config') ? $container->make('config') : null;
+        $declared = $config instanceof Repository ? $config->get('http-api.errors.details', []) : [];
+
+        return is_array($declared)
+            ? $declared
+            : throw new InvalidArgumentException('http-api.errors.details holds the details of the application by the code of the catalog, then by name.');
     }
 }

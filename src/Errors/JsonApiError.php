@@ -29,18 +29,20 @@ final readonly class JsonApiError
     ) {}
 
     /**
-     * An error of a code of the catalog.
+     * An error of a code of the catalog, with one of the code's details: the catalog's own, or one the application
+     * declares under the code in `http-api.errors.details`.
      *
      * @param  string  $code  a code of the catalog, `conflict` for instance
      * @param  string  $detail  the name of one of the code's details
      * @param  array<string, string>  $values  the values of the placeholders in the detail and in the code's headers
      * @param  array{pointer?: string, parameter?: string, header?: string}  $source  the input that caused the error
      *
-     * @throws InvalidArgumentException for a code or a detail the catalog does not have, or a placeholder without a value
+     * @throws InvalidArgumentException for a code or a detail the catalog does not have, a placeholder without a value,
+     *                                  or a value of a declared detail against the rules of the catalog's texts
      */
     public static function of(string $code, string $detail = 'default', array $values = [], array $source = []): self
     {
-        return self::from(ErrorCodes::shipped()->code($code), $detail, $values, $source);
+        return self::from(ErrorCodes::current()->code($code), $detail, $values, $source);
     }
 
     /**
