@@ -4,6 +4,25 @@ All notable changes to `pushery/http-api-for-laravel` are documented here. The f
 
 A release carries only the sections that have an entry, in this order: `### ⚠️ Breaking`, `### ✨ Added`, `### 🔧 Changed`, `### ⚡ Performance`, `### 🐛 Fixed`, `### 🔒 Security`, `### 🧹 Deprecated`, `### 🗑️ Removed` and `### 📚 Documentation`.
 
+## [0.5.0] - 2026-11-23
+
+### ✨ Added
+
+- **An application declares details of its own under a code of the catalog, in `http-api.errors.details`.** Since 0.4.0 every detail came from the gateway's catalog, so a cause that belongs to one product, an order that has shipped for instance, had no text of its own. `JsonApiError::of('conflict', 'already_shipped')` now answers with a detail the application declares under `conflict`, with the title and headers of the code. A name the catalog has under the code already, and a text against the rules of the catalog's texts, stop the application as it boots, and a value of a placeholder in such a detail follows the same rules. Several causes of one refusal are several errors of one `ErrorDocument`, with or without a field.
+- **The catalog carries `locked` and `dependency_unavailable`.** `abort(423)` answers `423` `locked` instead of `500` `internal_error`, and a `503` of a service the application depends on is `JsonApiError::of('dependency_unavailable')`. The copy of the gateway's catalog is the one of the commit that brings both.
+
+### 🔧 Changed
+
+- **A refused page parameter names its case in the detail.** A `page[size]` outside its range is answered with the range and the largest size, and a `page[cursor]` that is not one of the list's with the advice to start again from the first page, where both read the default detail of `malformed_request` before.
+
+### 🐛 Fixed
+
+- **A client error the catalog has no code for answers `400` `malformed_request` instead of `500` `internal_error`.** A client sends a request again after a `5xx`, so `abort(410)` had a client repeat a request the application had refused. Of Symfony's HTTP exceptions, `GoneHttpException` and `LengthRequiredHttpException` have no code of their own in the catalog.
+
+### 📚 Documentation
+
+- **The documentation says what Scramble needs to describe a to-many relationship of a JSON:API resource as a list.** Scramble reads whether a relationship is one or many from the model of the resource, so a resource outside Laravel's naming convention names its model with a `@mixin` tag. Where Scramble cannot place the model, it describes every relationship that `$relationships` names by its resource as a single identifier.
+
 ## [0.4.0] - 2026-11-22
 
 ### ⚠️ Breaking
@@ -83,7 +102,8 @@ A release carries only the sections that have an entry, in this order: `### ⚠�
 - **`Idempotent`, the `Idempotency-Key` of draft-ietf-httpapi-idempotency-key-header for Laravel.** A write under a key acts once: a repeated request gets the first answer again with `Idempotent-Replayed: true`, the same key with another request is refused with `422`, a request while the first one runs with `409`, and a missing or malformed key on `POST` and `PATCH` with `400`. The request's fingerprint covers its method, path, query, body, form fields and files. Only an answer below `400` is kept, so a corrected request goes through under the same key. A key belongs to the scope `ResolvesIdempotencyScope` names, the signed-in user by default, and is taken for `in_flight_ttl` while its first request runs and kept for `ttl` afterwards. An answer the store cannot hold, and a streamed answer or a file download, still reaches the client, and its key stays used for `ttl`: a repeat is answered with `409` instead of acting a second time.
 - **Problem documents, RFC 9457.** `Problem` answers as `application/problem+json`, and `ProblemRenderer` turns the failures of an API request into one: a validation into `422` with its `errors`, an unauthenticated request into `401` with the `WWW-Authenticate` header RFC 9110 requires, an HTTP exception into its status and headers with the message it was thrown with as `detail`, an exception implementing `ProvidesProblem` into its own document, and anything else into a `500` that says nothing about itself. A response an exception carries is kept as it is. A page that is no API page is left as Laravel renders it.
 
-[Unreleased]: https://github.com/pushery/http-api-for-laravel/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/pushery/http-api-for-laravel/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/pushery/http-api-for-laravel/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/pushery/http-api-for-laravel/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/pushery/http-api-for-laravel/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/pushery/http-api-for-laravel/compare/v0.1.0...v0.2.0

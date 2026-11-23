@@ -89,7 +89,10 @@ sort, include, field or append the route does not declare is then answered with 
 parameter in `source.parameter`.
 
 An exception of the application that should reach a client with a code of the catalog and the
-input it points to implements `ProvidesErrorDocument`. A route that speaks JSON:API gets the
+input it points to implements `ProvidesErrorDocument`. A cause that belongs to the product, such
+as an order that has shipped, is a detail the application declares under the code a client acts
+on, in `http-api.errors.details`, and several causes of one refusal are several errors of one
+`ErrorDocument`. A route that speaks JSON:API gets the
 `NegotiateJsonApi` middleware, which refuses a body in another media type with `415` and an
 `Accept` header that admits no JSON:API answer with `406`.
 
@@ -159,6 +162,8 @@ final class OutOfStock extends RuntimeException implements ProvidesErrorDocument
 
 ## Anti-Patterns
 
+- Answering a cause of the product with a code of its own: a client knows only the codes of the
+  catalog. Declare a detail under the code a client acts on in `http-api.errors.details`.
 - Keeping the keys in the array cache store, or in the file store while more than one server answers
   the API: a repeat that reaches another process or server finds no key and acts a second time.
   Name a store every process and server of the API shares: redis, database or dynamodb.

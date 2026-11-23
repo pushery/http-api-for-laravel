@@ -13,6 +13,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\ServiceProvider;
 use Override;
 use Pushery\HttpApi\Errors\ConfiguredApiRequests;
+use Pushery\HttpApi\Errors\ErrorCodes;
 use Pushery\HttpApi\Errors\ErrorRenderer;
 use Pushery\HttpApi\Errors\RecognizesApiRequests;
 use Pushery\HttpApi\Idempotency\AuthenticatedUserScope;
@@ -31,7 +32,7 @@ final class HttpApiServiceProvider extends ServiceProvider
      *
      * @var list<string>
      */
-    private const array CATALOG_SECTIONS = [];
+    private const array CATALOG_SECTIONS = ['http-api.errors.details'];
 
     #[Override]
     public function register(): void
@@ -49,6 +50,11 @@ final class HttpApiServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
+        // The details the application declares under the codes of the catalog are read once as it boots, so a name the
+        // catalog has already, or a text against the rules of its texts, stops the application and its tests before a
+        // client meets it.
+        ErrorCodes::current();
+
         $this->registerErrorRenderer();
 
         if ($this->app->runningInConsole()) {

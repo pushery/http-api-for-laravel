@@ -29,11 +29,12 @@ use Throwable;
  * model into a 404 and a refused authorization into a 403 before it asks a callback, so both arrive here as HTTP
  * exceptions and are answered by their status. The message of an exception never reaches the client: the title and the
  * detail of every error come from the catalog. A known path asked with another method answers like an unknown path,
- * `404` without `Allow`, because a `405` would list the methods of a path to anyone who asks. A status the catalog has
- * no code for, and an exception nobody anticipated, answer `500` `internal_error`; the exception still reaches the
- * reporters the way every other one does. With `app.debug` on, such an exception is left to Laravel, whose debug answer
- * is what a developer wants to read. An exception that carries its own response, and a validation given one, keep that
- * response.
+ * `404` without `Allow`, because a `405` would list the methods of a path to anyone who asks. A client error the catalog
+ * has no code for answers `400` `malformed_request`, so a client does not send it again unchanged as it would after a
+ * `5xx`. A server error the catalog has no code for, and an exception nobody anticipated, answer `500`
+ * `internal_error`; the exception still reaches the reporters the way every other one does. With `app.debug` on, such
+ * an exception is left to Laravel, whose debug answer is what a developer wants to read. An exception that carries its
+ * own response, and a validation given one, keep that response.
  *
  * A refusal of `spatie/laravel-query-builder`, a filter, a sort, an include, a field or an append the route does not
  * allow, answers `400` with one error per parameter it names. The package is no requirement: where it is not installed,

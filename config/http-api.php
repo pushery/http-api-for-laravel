@@ -58,6 +58,14 @@ return [
         // True answers a request that expects JSON with JSON:API errors on every route, outside the API too, in place of
         // Laravel's own JSON and its `message`. False keeps Laravel's answer there.
         'when_json_is_expected' => false,
+
+        // Details of the application's own, for the causes that belong to its product, by the code of the catalog a
+        // client acts on and then by name: 'conflict' => ['already_shipped' => 'The order has shipped and takes no
+        // changes.']. JsonApiError::of('conflict', 'already_shipped') answers with it. A name is lower-case letters,
+        // digits and underscores, and one the catalog has under the code already is refused. A text is printable ASCII
+        // without < > & / ' " and \, ends with a period and writes a placeholder as {name}. Both are checked as the
+        // application boots.
+        'details' => [],
     ],
 
     /*

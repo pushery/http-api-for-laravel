@@ -139,7 +139,8 @@ route keeps Laravel's own JSON and its `message` unless `http-api.errors.when_js
 `http-api.errors.hosts`, an API that still answers under `/api` names that prefix in
 `http-api.errors.route_prefixes`, and an application that knows its API requests another way binds
 `RecognizesApiRequests`. An exception of your own implements `ProvidesErrorDocument` to answer with
-a code of the catalog and the input it points to, and `NegotiateJsonApi` holds a route to the
+a code of the catalog and the input it points to, a cause of your product is a detail you declare
+under a code in `http-api.errors.details`, and `NegotiateJsonApi` holds a route to the
 content negotiation of JSON:API. See [Errors](https://docs.pushery.com/http-api-for-laravel/errors/).
 
 ## Testing
