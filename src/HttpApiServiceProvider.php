@@ -15,7 +15,9 @@ use Override;
 use Pushery\HttpApi\Errors\ConfiguredApiRequests;
 use Pushery\HttpApi\Errors\ErrorCodes;
 use Pushery\HttpApi\Errors\ErrorRenderer;
+use Pushery\HttpApi\Errors\JsonApiErrorResponses;
 use Pushery\HttpApi\Errors\RecognizesApiRequests;
+use Pushery\HttpApi\Errors\WritesErrorResponses;
 use Pushery\HttpApi\Idempotency\AuthenticatedUserScope;
 use Pushery\HttpApi\Idempotency\ResolvesIdempotencyScope;
 use Throwable;
@@ -46,6 +48,7 @@ final class HttpApiServiceProvider extends ServiceProvider
         // The same for the requests that belong to the API: the configuration's API host, hosts and prefixes, unless
         // the application knows its API better and binds its own.
         $this->app->bindIf(RecognizesApiRequests::class, ConfiguredApiRequests::class);
+        $this->app->bindIf(WritesErrorResponses::class, JsonApiErrorResponses::class);
     }
 
     public function boot(): void

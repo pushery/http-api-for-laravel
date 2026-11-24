@@ -8,8 +8,9 @@ use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Http\Request;
 
 /**
- * The default scope: the user a request is authenticated as, by class and identifier, so a user and an API client of
- * another model with the same id stay apart. A request nobody is authenticated for has no scope here.
+ * The default scope: the host a request is sent to and the user it is authenticated as, by class and identifier, so a
+ * user and an API client of another model with the same id stay apart, and so do two tenants an application tells
+ * apart by their host. A request nobody is authenticated for has no scope here.
  */
 final class AuthenticatedUserScope implements ResolvesIdempotencyScope
 {
@@ -23,6 +24,6 @@ final class AuthenticatedUserScope implements ResolvesIdempotencyScope
 
         $identifier = $user->getAuthIdentifier();
 
-        return is_scalar($identifier) && (string) $identifier !== '' ? $user::class.':'.$identifier : null;
+        return is_scalar($identifier) && (string) $identifier !== '' ? $request->getHost().' '.$user::class.':'.$identifier : null;
     }
 }

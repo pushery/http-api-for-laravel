@@ -20,12 +20,14 @@ final readonly class JsonApiError
     /**
      * @param  array<string, string>  $source
      * @param  array<string, string>  $headers  the headers the code adds to a response, filled
+     * @param  string  $detailName  the name of the detail the error was made with, `default` unless it named another
      */
     private function __construct(
         public ErrorCode $code,
         public string $detail,
         public array $source,
         public array $headers,
+        public string $detailName,
     ) {}
 
     /**
@@ -87,6 +89,6 @@ final readonly class JsonApiError
      */
     private static function from(ErrorCode $code, string $detail, array $values, array $source): self
     {
-        return new self($code, $code->detail($detail, $values), $source, $code->headers($values));
+        return new self($code, $code->detail($detail, $values), $source, $code->headers($values), $detail);
     }
 }

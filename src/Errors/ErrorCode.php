@@ -24,6 +24,15 @@ final readonly class ErrorCode
     /** The name of a detail: lower-case letters, digits and underscores, starting with a letter. */
     private const string DETAIL_NAME = '/\A[a-z][a-z0-9_]*\z/';
 
+    /** A value that fills a header: letters, digits and hyphens. */
+    private const string HEADER_VALUE = '/\A[A-Za-z0-9-]+\z/';
+
+    /**
+     * The scheme of the challenge of a `401`, its `{scheme}`, where the error names no other: the scheme of a key or a
+     * token, the one the gateway writes on every `401` it answers.
+     */
+    private const string DEFAULT_SCHEME = 'Bearer';
+
     /**
      * @param  int  $status  the HTTP status of the code
      * @param  string  $code  the code itself, `not_found` for instance
@@ -140,13 +149,32 @@ final readonly class ErrorCode
     /**
      * The headers the code adds to a response, their placeholders filled.
      *
+     * `{scheme}`, the scheme of the challenge of a `401`, is `Bearer` where the values name no other. A value that fills
+     * a header is letters, digits and hyphens, so a header holds the one token its code names and never a list, a
+     * parameter or a line break.
+     *
      * @param  array<string, string>  $values
      * @return array<string, string>
      *
-     * @throws InvalidArgumentException for a placeholder without a value
+     * @throws InvalidArgumentException for a placeholder without a value, and for a value of a placeholder in a header that
+     *                                  is not letters, digits and hyphens
      */
     public function headers(array $values = []): array
     {
+        $values += ['scheme' => self::DEFAULT_SCHEME];
+
+        foreach ($this->headers as $value) {
+            foreach ($this->placeholdersIn($value) as $placeholder) {
+                if (array_key_exists($placeholder, $values) && preg_match(self::HEADER_VALUE, $values[$placeholder]) !== 1) {
+                    throw new InvalidArgumentException(sprintf(
+                        'The value of {%s} in a header of the error code [%s] is not letters, digits and hyphens.',
+                        $placeholder,
+                        $this->code,
+                    ));
+                }
+            }
+        }
+
         return array_map(fn (string $value): string => $this->fill($value, $values), $this->headers);
     }
 

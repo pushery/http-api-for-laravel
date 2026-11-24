@@ -4,6 +4,22 @@ All notable changes to `pushery/http-api-for-laravel` are documented here. The f
 
 A release carries only the sections that have an entry, in this order: `### ⚠️ Breaking`, `### ✨ Added`, `### 🔧 Changed`, `### ⚡ Performance`, `### 🐛 Fixed`, `### 🔒 Security`, `### 🧹 Deprecated`, `### 🗑️ Removed` and `### 📚 Documentation`.
 
+## [0.6.0] - 2026-11-24
+
+### ✨ Added
+
+- **An API whose contract fixes another error format writes it from the package's errors.** Every error response goes through `WritesErrorResponses`, which the package binds to `JsonApiErrorResponses`, the JSON:API document of before. An application binds a writer of its own, for an RFC 9457 problem document on the routes of an API it published before, and writes it from the same errors: each error's code, title and detail, the name of its detail in the new `detailName`, and the headers of the response from `ErrorDocument::responseHeaders()`.
+- **An invalid field can answer with a detail the application declares.** A rule whose message is made with `FieldDetail::named()` names a detail declared under `validation_failed` in `http-api.errors.details`, with the values of its placeholders, and the field answers with that detail instead of `default`, so a client learns, for example, that two of an item are left. A value can be a placeholder of Laravel's own message, `:max` for instance, which Laravel fills with a parameter of the rule. `:input` is refused, because no value of the request becomes part of a detail. A detail the code does not have and a value against the rules of the catalog's texts answer with `default`.
+
+### 🐛 Fixed
+
+- **A `401` names the scheme its route authenticates with.** Since 0.4.0 every `401` answered `WWW-Authenticate: Bearer` and asked for a bearer token, also on a route that checks a signature, and the challenge an `abort(401)` gave was replaced. The copy of the gateway's catalog is now the one that writes the header as `{scheme}`: the package fills it with `Bearer`, or with the scheme of the challenge an `abort(401)` gives, and an error of the application's own names it as `JsonApiError::of('unauthenticated', 'signature_invalid', ['scheme' => 'Signature'])`, with a detail it declares under `unauthenticated`. A value that fills a header is letters, digits and hyphens, so `retry_after` takes whole seconds, as the detail of `rate_limited` reads them.
+- **A refusal keeps the headers the application gives it.** Since 0.4.0 an HTTP exception answered with only the limit headers of a `429` and the `Retry-After` of a `503`, so a header a middleware sets on its refusal, as `abort_unless($allowed, 403, headers: ['X-Access-Refused' => '1'])` does, was gone from the response. The response now keeps every header of the exception except `Allow`, since a `405` answers as a `404`, `Refresh`, `Retry-After`, which the response writes itself where its status names a wait, and the headers of a body. The catalog's headers and the request id still take precedence.
+
+### 🔒 Security
+
+- **The keys of an idempotent request are kept apart per host.** The default scope named the signed-in user alone, so in an application that tells its tenants apart by their host, a user of each tenant with the same id who sent the same `Idempotency-Key`, path and body got the stored answer of the other tenant back, and the request never ran. `AuthenticatedUserScope` now names the host beside the user. A key stored before the update no longer matches, so a request retried across the update within `http-api.idempotency.ttl` runs once more.
+
 ## [0.5.0] - 2026-11-23
 
 ### ✨ Added
@@ -102,7 +118,8 @@ A release carries only the sections that have an entry, in this order: `### ⚠�
 - **`Idempotent`, the `Idempotency-Key` of draft-ietf-httpapi-idempotency-key-header for Laravel.** A write under a key acts once: a repeated request gets the first answer again with `Idempotent-Replayed: true`, the same key with another request is refused with `422`, a request while the first one runs with `409`, and a missing or malformed key on `POST` and `PATCH` with `400`. The request's fingerprint covers its method, path, query, body, form fields and files. Only an answer below `400` is kept, so a corrected request goes through under the same key. A key belongs to the scope `ResolvesIdempotencyScope` names, the signed-in user by default, and is taken for `in_flight_ttl` while its first request runs and kept for `ttl` afterwards. An answer the store cannot hold, and a streamed answer or a file download, still reaches the client, and its key stays used for `ttl`: a repeat is answered with `409` instead of acting a second time.
 - **Problem documents, RFC 9457.** `Problem` answers as `application/problem+json`, and `ProblemRenderer` turns the failures of an API request into one: a validation into `422` with its `errors`, an unauthenticated request into `401` with the `WWW-Authenticate` header RFC 9110 requires, an HTTP exception into its status and headers with the message it was thrown with as `detail`, an exception implementing `ProvidesProblem` into its own document, and anything else into a `500` that says nothing about itself. A response an exception carries is kept as it is. A page that is no API page is left as Laravel renders it.
 
-[Unreleased]: https://github.com/pushery/http-api-for-laravel/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/pushery/http-api-for-laravel/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/pushery/http-api-for-laravel/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/pushery/http-api-for-laravel/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/pushery/http-api-for-laravel/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/pushery/http-api-for-laravel/compare/v0.2.0...v0.3.0

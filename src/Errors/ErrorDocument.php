@@ -4,19 +4,18 @@ declare(strict_types=1);
 
 namespace Pushery\HttpApi\Errors;
 
+use Illuminate\Container\Container;
 use Illuminate\Http\JsonResponse;
 use InvalidArgumentException;
 
 /**
- * A JSON:API error document, `{"errors": [...]}`, and the response that carries it.
+ * The errors of one error response and its headers. {@see WritesErrorResponses} writes the response, the JSON:API
+ * document `{"errors": [...]}` of {@see JsonApiErrorResponses} unless the application binds another writer.
  *
  * Every error of a document has the same status, which is the status of the response, as one object per invalid field
  * of a validation has. The response carries the headers the catalog names for every error response, the request id
  * and the headers of the first error's code, and beside them only the headers given here, such as the limit headers
  * of a throttled request. A given header never replaces one of the others.
- *
- * The body is written without whitespace and with slashes unescaped, the bytes the gateway's encoder writes for the
- * same error: the texts of the catalog hold none of the characters the two encoders write differently.
  */
 final readonly class ErrorDocument
 {
@@ -52,14 +51,27 @@ final readonly class ErrorDocument
         return $this->errors[0]->code->status;
     }
 
-    /** The response, every error naming the request id that the response names in `Request-Id`. */
+    /**
+     * The response, every error naming the request id that the response names in `Request-Id`, written by the
+     * {@see WritesErrorResponses} the application binds, and by {@see JsonApiErrorResponses} where none is bound.
+     */
     public function toResponse(string $requestId): JsonResponse
     {
-        return new JsonResponse(
-            ['errors' => array_map(static fn (JsonApiError $error): array => $error->toArray($requestId), $this->errors)],
-            $this->status(),
-            [...$this->headers, ...$this->errors[0]->headers, ...ErrorCodes::shipped()->responseHeaders, 'Request-Id' => $requestId],
-            JSON_UNESCAPED_SLASHES,
-        );
+        $container = Container::getInstance();
+        $writer = $container->bound(WritesErrorResponses::class) ? $container->make(WritesErrorResponses::class) : new JsonApiErrorResponses;
+
+        return $writer->respond($this, $requestId);
+    }
+
+    /**
+     * The headers of the response: the ones given here, those of the first error's code, the ones the catalog names for
+     * every error response and the request id, a later one winning, so a given header never replaces one of the others.
+     * A writer of another format sends them as well and sets its own `Content-Type` over the catalog's.
+     *
+     * @return array<string, string>
+     */
+    public function responseHeaders(string $requestId): array
+    {
+        return [...$this->headers, ...$this->errors[0]->headers, ...ErrorCodes::shipped()->responseHeaders, 'Request-Id' => $requestId];
     }
 }
