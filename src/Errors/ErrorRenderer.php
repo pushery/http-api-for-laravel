@@ -12,6 +12,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Collection;
 use Illuminate\Validation\ValidationException;
+use InvalidArgumentException;
 use Spatie\QueryBuilder\Exceptions\InvalidAppendQuery;
 use Spatie\QueryBuilder\Exceptions\InvalidFieldQuery;
 use Spatie\QueryBuilder\Exceptions\InvalidFilterQuery;
@@ -44,6 +45,13 @@ final readonly class ErrorRenderer
 {
     /** The limit headers of a throttled request, which its error response keeps. */
     private const array LIMIT_HEADERS = ['X-RateLimit-Limit', 'X-RateLimit-Remaining', 'X-RateLimit-Reset'];
+
+    /**
+     * The headers of an HTTP exception its error response leaves out: `Allow`, because a `405` answers as a `404`,
+     * `Refresh`, which tells a browser to load the page again, `Retry-After`, which the response writes itself where its
+     * status names a wait, and the headers of a body, which describe the document the exception never carries.
+     */
+    private const array HEADERS_LEFT_OUT = ['allow', 'refresh', 'retry-after', 'content-type', 'content-length', 'content-encoding', 'transfer-encoding'];
 
     /** The wait in seconds a `429` names when its exception gives none, as `abort(429)` throws it. */
     private const string DEFAULT_RETRY_AFTER = '60';
@@ -100,7 +108,7 @@ final readonly class ErrorRenderer
     /**
      * One error per invalid field, each naming its field: a member of the body by its JSON pointer, a query parameter by
      * its name. A field the query carries and the body does not is a query parameter, and so is every field of a
-     * request whose method has no body.
+     * request whose method has no body. Its detail is the code's `default`, or the one its rule names, see fieldError().
      */
     private function validation(ValidationException $failure, Request $request): ErrorDocument
     {
@@ -110,16 +118,43 @@ final readonly class ErrorRenderer
         $body = $request->request->all();
         $errors = [];
 
-        foreach (array_keys($failure->errors()) as $field) {
+        foreach ($failure->errors() as $field => $messages) {
             $field = (string) $field;
             $inQuery = Arr::has($request->query->all(), $field) && ! Arr::has($body, $field);
             $source = $inQuery || in_array($request->getMethod(), ['GET', 'HEAD'], true)
                 ? ['parameter' => $this->parameter($field)]
                 : ['pointer' => $this->pointer($field)];
-            $errors[] = JsonApiError::of($code->code, source: $source);
+            $errors[] = $this->fieldError($code, is_array($messages) ? $messages : [], $source);
         }
 
         return new ErrorDocument($errors === [] ? [JsonApiError::of($code->code)] : $errors);
+    }
+
+    /**
+     * The error of one invalid field, with the detail the first of its messages names through FieldDetail::named(),
+     * where the code has that detail and every value keeps the rules of the catalog's texts, and with the code's
+     * `default` otherwise. A message is read for a name and values only, never as a text.
+     *
+     * @param  array<mixed>  $messages  the messages of the field
+     * @param  array{pointer?: string, parameter?: string}  $source
+     */
+    private function fieldError(ErrorCode $code, array $messages, array $source): JsonApiError
+    {
+        foreach ($messages as $message) {
+            $named = is_string($message) ? FieldDetail::in($message) : null;
+
+            if ($named === null) {
+                continue;
+            }
+
+            try {
+                return JsonApiError::of($code->code, $named[0], $named[1], $source);
+            } catch (InvalidArgumentException) {
+                break;
+            }
+        }
+
+        return JsonApiError::of($code->code, source: $source);
     }
 
     /**
@@ -182,8 +217,10 @@ final readonly class ErrorRenderer
     /**
      * The error of an HTTP exception, or null for a status that is no error.
      *
-     * A throttled request keeps its limit headers and names its wait, and the maintenance mode keeps its `Retry-After`
-     * when the end is known. Every other header of the exception stays out, `Allow` and `Refresh` among them.
+     * The response keeps the headers an application gives its refusal, such as the one a middleware marks it with,
+     * apart from {@see self::HEADERS_LEFT_OUT}. A throttled request keeps its limit headers and names its wait, and the
+     * maintenance mode keeps its `Retry-After` when the end is known. A `401` names the scheme of the challenge its
+     * refusal gives, see scheme().
      */
     private function http(HttpExceptionInterface $failure): ?ErrorDocument
     {
@@ -194,10 +231,15 @@ final readonly class ErrorRenderer
         }
 
         $headers = [];
+        $given = [];
 
         foreach ($failure->getHeaders() as $name => $value) {
             if (is_string($name) && is_scalar($value)) {
                 $headers[strtolower($name)] = (string) $value;
+
+                if (! in_array(strtolower($name), self::HEADERS_LEFT_OUT, true)) {
+                    $given[$name] = (string) $value;
+                }
             }
         }
 
@@ -206,10 +248,11 @@ final readonly class ErrorRenderer
         return match ($status) {
             429 => ErrorDocument::of(
                 JsonApiError::of('rate_limited', values: ['retry_after' => preg_match('/\A\d+\z/', $wait) === 1 ? $wait : self::DEFAULT_RETRY_AFTER]),
-                $this->limitHeaders($headers),
+                [...$this->withoutLimitHeaders($given), ...$this->limitHeaders($headers)],
             ),
-            503 => ErrorDocument::of(JsonApiError::forStatus(503), preg_match('/\A\d+\z/', $wait) === 1 ? ['Retry-After' => $wait] : []),
-            default => ErrorDocument::of(JsonApiError::forStatus($status)),
+            401 => ErrorDocument::of(JsonApiError::forStatus(401, $this->scheme($headers['www-authenticate'] ?? '')), $given),
+            503 => ErrorDocument::of(JsonApiError::forStatus(503), [...$given, ...(preg_match('/\A\d+\z/', $wait) === 1 ? ['Retry-After' => $wait] : [])]),
+            default => ErrorDocument::of(JsonApiError::forStatus($status), $given),
         };
     }
 
@@ -230,6 +273,32 @@ final readonly class ErrorRenderer
         }
 
         return $kept;
+    }
+
+    /**
+     * The scheme of the challenge an application gives its `401`, as the value of `{scheme}`: `Signature` of
+     * `Signature realm="inbox"`. The header of the catalog names the scheme alone, so the parameters of the challenge
+     * are left out, and a challenge whose scheme is not letters, digits and hyphens leaves it at `Bearer`.
+     *
+     * @return array<string, string>
+     */
+    private function scheme(string $challenge): array
+    {
+        return preg_match('/\A([A-Za-z0-9-]+)(?:[ \t,]|\z)/', $challenge, $match) === 1 ? ['scheme' => $match[1]] : [];
+    }
+
+    /**
+     * The headers given to a throttled refusal without its limit headers, which the response writes under their usual
+     * names, so none of them is written twice in two spellings.
+     *
+     * @param  array<string, string>  $given
+     * @return array<string, string>
+     */
+    private function withoutLimitHeaders(array $given): array
+    {
+        $limit = array_map(strtolower(...), self::LIMIT_HEADERS);
+
+        return array_filter($given, static fn (string $name): bool => ! in_array(strtolower($name), $limit, true), ARRAY_FILTER_USE_KEY);
     }
 
     /** A field as a JSON pointer (RFC 6901): `data.attributes.name` is `/data/attributes/name`. */

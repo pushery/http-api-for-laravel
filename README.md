@@ -130,18 +130,21 @@ See [Pagination](https://docs.pushery.com/http-api-for-laravel/pagination/).
 
 ### Errors
 
-Nothing to set up: every failure of a request to the API host, `api.` before the host of
-`app.url`, is answered as JSON:API error objects, `application/vnd.api+json`, with a status, a
-stable code, a title and a detail from the error catalog the gateway in front of the application
-answers from, so the same error looks the same from either. A request that expects JSON on any
-route keeps Laravel's own JSON and its `message` unless `http-api.errors.when_json_is_expected` is
-`true`. An API on another host names it in `HTTP_API_HOST`, further hosts go into
-`http-api.errors.hosts`, an API that still answers under `/api` names that prefix in
-`http-api.errors.route_prefixes`, and an application that knows its API requests another way binds
-`RecognizesApiRequests`. An exception of your own implements `ProvidesErrorDocument` to answer with
-a code of the catalog and the input it points to, a cause of your product is a detail you declare
-under a code in `http-api.errors.details`, and `NegotiateJsonApi` holds a route to the
-content negotiation of JSON:API. See [Errors](https://docs.pushery.com/http-api-for-laravel/errors/).
+Nothing to set up: every failure of a request to the API host, `api.` before the host of `app.url`,
+is answered as JSON:API error objects, `application/vnd.api+json`, with a status, a stable code, a
+title and a detail from the error catalog the gateway in front of the application answers from, so
+the same error looks the same from either. A request that expects JSON on any route keeps Laravel's
+own JSON and its `message` unless `http-api.errors.when_json_is_expected` is `true`. An API on
+another host names it in `HTTP_API_HOST`, further hosts go into `http-api.errors.hosts`, an API that
+still answers under `/api` names that prefix in `http-api.errors.route_prefixes`, and an application
+that knows its API requests another way binds `RecognizesApiRequests`. An exception of your own
+implements `ProvidesErrorDocument` to answer with a code of the catalog and the input it points to,
+a cause of your product is a detail you declare under a code in `http-api.errors.details`, which a
+rule also names for the field it refuses with `FieldDetail::named()`, and
+`NegotiateJsonApi` holds a route to the content negotiation of JSON:API. An API whose contract fixes
+another error format binds its own `WritesErrorResponses`. A refusal keeps the headers
+it is given, apart from `Allow` and those the response writes itself. See
+[Errors](https://docs.pushery.com/http-api-for-laravel/errors/).
 
 ## Testing
 
